@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>釣魚小遊戲 - 動態升級版</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #333;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            user-select: none;
+        }
+
+        #game-container {
+            width: 800px;
+            background-color: #f0f0f0;
+            border: 5px solid #222;
+            border-radius: 10px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.5);
+        }
+
+        #game-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 20px;
+            background-color: #e07b39; 
+            color: #4b2c15; 
+            font-size: 18px;
+            font-weight: bold;
+        }
+
+        .stats-left, .stats-right {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        #back-button {
+            background-color: #4CAF50; 
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 24px;
+            border: none;
+            box-shadow: 0 4px #2e7d32;
+        }
+        #back-button:active {
+            box-shadow: 0 2px #2e7d32;
+            transform: translateY(2px);
+        }
+
+        #money-display { color: #fff; }
+        #goal-display { color: #f0f; }
+        #time-display { color: red; }
+
+        canvas {
+            display: block;
+            background-color: #7b9cc0; 
+            cursor: crosshair;
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <header id="game-header">
+            <div class="stats-left">
+                <div>金錢: <span id="money-display">$0</span></div>
+                <div>目標: <span id="goal-display">$850</span></div>
+            </div>
+                        <div class="stats-right">
+                <div>時間: <span id="time-display">60</span></div>
+                <div>關卡: <span id="level-display">1</span></div>
+            </div>
+        </header>
+        <canvas id="game-canvas" width="800" height="500"></canvas>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('game-canvas');
+        const ctx = canvas.getContext('2d');
+        const moneyDisplay = document.getElementById('money-display');
+        const goalDisplay = document.getElementById('goal-display');
+        const timeDisplay = document.getElementById('time-display');
+        const levelDisplay = document.getElementById('level-display');
+        const backButton = document.getElementById('back-button');
+
+        // 遊戲狀態和常數
+        const GAME_WIDTH = canvas.width;
+        const GAME_HEIGHT = canvas.height;
+        const INITIAL_GOAL = 850; 
+        const INITIAL_TIME = 60;
+        const FISHERMAN_Y = 50;
+        const HOOK_MAX_Y = GAME_HEIGHT - 20;
+        const SWING_MAX_ANGLE = Math.PI / 2.2; 
+
+        let money = 0;
+        let goal = INITIAL_GOAL;
+        let timeLeft = INITIAL_TIME;
+        let currentLevel = 1;
+        let isGameOver = false;
+        let gameItems = [];
+
+        // 對象類：釣魚鉤
+        class Hook {
+            constructor() {
+                this.x = GAME_WIDTH / 2;
+                this.y = FISHERMAN_Y;
+                this.angle = 0;
+                this.state = 'SWINGING'; // 'SWINGING', 'DESCENDING', 'ASCENDING'
+                this.swingSpeed = 0.025;
+                this.moveSpeed = 10;
+                this.capturedItem = null;
+                this.length = 0;
+            }
+
+            update() {
+                if (this.state === 'SWINGING') {
+                    this.angle += this.swingSpeed;
+                    if (this.angle > SWING_MAX_ANGLE || this.angle < -SWING_MAX_ANGLE) {
+                        this.swingSpeed *= -1;
+                    }
+                    this.length = 0;
+                } else if (this.state === 'DESCENDING') {
+                    this.length += this.moveSpeed;
+                    this.x = GAME_WIDTH / 2 + this.length * Math.sin(this.angle);
+                    this.y = FISHERMAN_Y + this.length * Math.cos(this.angle);
+
+                    if (this.y > HOOK_MAX_Y || this.x < 0 || this.x > GAME_WIDTH) {
+                        this.state = 'ASCENDING';
+                    }
+                    this.checkCollisions();
+                } else if (this.state === 'ASCENDING') {
+                    const returnSpeed = this.capturedItem ? this.moveSpeed / this.capturedItem.weight : this.moveSpeed;
+                    this.length -= returnSpeed;
+                    this.x = GAME_WIDTH / 2 + this.length * Math.sin(this.angle);
+                    this.y = FISHERMAN_Y + this.length * Math.cos(this.angle);
+
+                    if (this.length <= 0) {
+                        this.state = 'SWINGING';
+                        this.x = GAME_WIDTH / 2;
+                        this.y = FISHERMAN_Y;
+                        if (this.capturedItem) {
+                            this.collectItem();
+                        }
+                    }
+                }
+            }
+
+            checkCollisions() {
+                // 將鉤尖的判定範圍稍微往下延伸，對齊 J 型鉤的底部
+                const hookBottomX = this.x + 15 * Math.sin(this.angle);
+                const hookBottomY = this.y + 15 * Math.cos(this.angle);
+
+                for (let i = gameItems.length - 1; i >= 0; i--) {
+                    const item = gameItems[i];
+                    const dx = hookBottomX - item.x;
+                    const dy = hookBottomY - item.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+
+                    if (distance < item.radius + 5) {
+                        if (item.type === 'tnt') {
+                            this.capturedItem = { name: 'TNT', value: -300, weight: 1.2, isFake: true };
+                            gameItems.splice(i, 1);
+                            this.state = 'ASCENDING';
+                            this.updateStats(); // 炸到立刻扣分
+                            break;
+                        } else {
+                            this.capturedItem = item;
+                            gameItems.splice(i, 1);
+                            this.state = 'ASCENDING';
+                            break;
+                        }
+                    }
+                }
+            }
+
+            collectItem() {
+                money += this.capturedItem.value;
+                this.capturedItem = null;
+                this.updateStats();
+            }
+
+            updateStats() {
+                moneyDisplay.textContent = `$${money}`;
+                if (money < 0) moneyDisplay.style.color = 'red';
+                else moneyDisplay.style.color = '#fff';
+            }
+
+            draw() {
+                // 1. 繪製釣竿線
+                ctx.beginPath();
+                ctx.moveTo(GAME_WIDTH / 2, FISHERMAN_Y);
+                ctx.lineTo(this.x, this.y);
+                ctx.lineWidth = 2;
+                ctx.strokeStyle = '#fff';
+                ctx.stroke();
+
+                // 2. 繪製 J 型實體魚鉤 (根據線的角度旋轉)
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.rotate(-this.angle); // 負角度完美對齊畫布座標的下垂線
+
+                ctx.beginPath();
+                ctx.moveTo(0, 0); // 綁線點
+                ctx.lineTo(0, 18); // 鉤柄
+                ctx.arc(-8, 18, 8, 0, Math.PI); // 彎曲半圓
+                ctx.lineTo(-16, 12); // 鉤尖
+
+                ctx.lineWidth = 4;
+                ctx.strokeStyle = '#ccc'; // 銀灰色
+                ctx.stroke();
+
+                // 畫個小倒刺增加細節
+                ctx.beginPath();
+                ctx.moveTo(-16, 12);
+                ctx.lineTo(-11, 15);
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                ctx.restore();
+
+                // 3. 繪製被捕獲的物品 (掛在鉤子彎曲處)
+                if (this.capturedItem && !this.capturedItem.isFake) {
+                    const hookBottomX = this.x + 18 * Math.sin(this.angle);
+                    const hookBottomY = this.y + 18 * Math.cos(this.angle);
+                    
+                    const item = this.capturedItem;
+                    const origX = item.x;
+                    const origY = item.y;
+                    
+                    item.x = hookBottomX;
+                    item.y = hookBottomY + item.radius * 0.5; // 稍微懸掛
+                    item.draw(); 
+                    
+                    item.x = origX; // 恢復座標
+                    item.y = origY;
+                }
+            }
+
+            deploy() {
+                if (this.state === 'SWINGING') {
+                    this.state = 'DESCENDING';
+                }
+            }
+        }
+
+        // 對象類：遊戲物品 (加入移動邏輯)
+        class GameItem {
+            constructor(x, y, value, weight, radius, color, type = 'fish') {
+                this.x = x;
+                this.y = y;
+                this.value = value;
+                this.weight = weight; 
+                this.radius = radius;
+                this.color = color;
+                this.type = type; 
+                
+                // 設定移動速度與方向
+                if (type === 'tnt') {
+                    this.vx = 0; // TNT 不動
+                } else {
+                    // 隨機初始方向 (-1 或 1)
+                    let dir = Math.random() < 0.5 ? -1 : 1;
+                    
+                    if (type === 'fish_large') this.vx = dir * (Math.random() * 0.5 + 0.2); // 大魚游得慢
+                    else if (type === 'fish_valuable') this.vx = dir * (Math.random() * 1.5 + 1.5); // 鑽石魚游得快
+                    else if (type === 'fish_small') this.vx = dir * (Math.random() * 1.0 + 0.5); // 小魚正常
+                    else this.vx = dir * (Math.random() * 0.4 + 0.1); // 垃圾隨波逐流 (很慢)
+                }
+            }
+
+            update() {
+                if (this.vx !== 0) {
+                    this.x += this.vx;
+                    // 撞到左右牆壁時反彈
+                    if (this.x - this.radius * 2 < 0 || this.x + this.radius * 2 > GAME_WIDTH) {
+                        this.vx *= -1;
+                    }
+                }
+            }
+
+            draw() {
+                if (this.type === 'tnt') {
+                    // TNT 炸藥桶
+                    ctx.fillStyle = '#f90';
+                    ctx.fillRect(this.x - this.radius, this.y - this.radius, this.radius * 2, this.radius * 2);
+                    ctx.strokeStyle = '#000';
+                    ctx.strokeRect(this.x - this.radius, this.y - this.radius, this.radius * 2, this.radius * 2);
+                    ctx.fillStyle = 'black';
+                    ctx.font = 'bold 16px Arial';
+                    ctx.fillText('TNT', this.x - 15, this.y + 5);
+                } 
+                else if (this.type.includes('fish')) {
+                    // --- 繪製魚 ---
+                    
+                    // 畫尾巴 (根據游動方向決定尾巴位置)
+                    ctx.beginPath();
+                    if (this.vx >= 0) {
+                        // 往右游，尾巴在左
+                        ctx.moveTo(this.x - this.radius, this.y);
+                        ctx.lineTo(this.x - this.radius * 2, this.y - this.radius * 0.8);
+                        ctx.lineTo(this.x - this.radius * 2, this.y + this.radius * 0.8);
+                    } else {
+                        // 往左游，尾巴在右
+                        ctx.moveTo(this.x + this.radius, this.y);
+                        ctx.lineTo(this.x + this.radius * 2, this.y - this.radius * 0.8);
+                        ctx.lineTo(this.x + this.radius * 2, this.y + this.radius * 0.8);
+                    }
+                    ctx.closePath();
+                    ctx.fillStyle = this.color;
+                    ctx.fill();
+                    ctx.strokeStyle = '#000';
+                    ctx.stroke();
+
+                    // 畫身體 (橢圓形)
+                    ctx.beginPath();
+                    ctx.ellipse(this.x, this.y, this.radius * 1.5, this.radius, 0, 0, Math.PI * 2);
+                    ctx.fillStyle = this.color;
+                    ctx.fill();
+                    ctx.stroke();
+
+                    // 畫眼睛 (看向游動方向)
+                    ctx.beginPath();
+                    let eyeOffsetX = this.vx >= 0 ? this.radius * 0.7 : -this.radius * 0.7;
+                    ctx.arc(this.x + eyeOffsetX, this.y - this.radius * 0.3, this.radius * 0.25, 0, Math.PI * 2);
+                    ctx.fillStyle = 'white';
+                    ctx.fill();
+                    
+                    // 黑眼珠
+                    ctx.beginPath();
+                    let pupilOffsetX = this.vx >= 0 ? 1 : -1;
+                    ctx.arc(this.x + eyeOffsetX + pupilOffsetX, this.y - this.radius * 0.3, this.radius * 0.1, 0, Math.PI * 2);
+                    ctx.fillStyle = 'black';
+                    ctx.fill();
+                } 
+                else {
+                    // 垃圾 (圓形)
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                    ctx.fillStyle = this.color;
+                    ctx.fill();
+                    ctx.strokeStyle = '#000';
+                    ctx.stroke();
+                }
+            }
+        }
+
+        const playerHook = new Hook();
+
+        // 物品工廠
+        function createItem(type) {
+            const margin = 40;
+            const x = Math.random() * (GAME_WIDTH - margin * 2) + margin;
+            const y = Math.random() * (GAME_HEIGHT - FISHERMAN_Y - 120) + FISHERMAN_Y + 70;
+
+            switch (type) {
+                case 'fish_small': return new GameItem(x, y, 50, 1.2, 12, '#FF9800', 'fish_small');
+                case 'fish_large': return new GameItem(x, y, 200, 3, 22, '#F44336', 'fish_large');
+                case 'fish_valuable': return new GameItem(x, y, 500, 1.1, 10, '#E040FB', 'fish_valuable');
+                case 'trash_boot': return new GameItem(x, y, -10, 4, 15, '#795548', 'trash');
+                case 'trash_can': return new GameItem(x, y, -5, 2, 12, '#9E9E9E', 'trash');
+                case 'tnt': return new GameItem(x, y, -300, 1.2, 20, '#f90', 'tnt');
+                default: return new GameItem(x, y, 10, 1, 10, 'gray', 'trash');
+            }
+        }
+
+        // 初始化關卡
+        function startLevel(level) {
+            currentLevel = level;
+            goal = INITIAL_GOAL; 
+            timeLeft = INITIAL_TIME;
+            gameItems = [];
+
+            const itemCounts = {
+                'fish_small': 5,
+                'fish_large': 3,
+                'fish_valuable': 2,
+                'trash_boot': 3,
+                'trash_can': 3,
+                'tnt': 3 
+            };
+
+            for (const type in itemCounts) {
+                for (let i = 0; i < itemCounts[type]; i++) {
+                    gameItems.push(createItem(type));
+                }
+            }
+
+            goalDisplay.textContent = `$${goal}`;
+            levelDisplay.textContent = level;
+            timeDisplay.textContent = timeLeft;
+            timeLeftInterval = setInterval(updateTimer, 1000);
+        }
+
+        let timeLeftInterval;
+        function updateTimer() {
+            timeLeft--;
+            timeDisplay.textContent = timeLeft;
+            if (timeLeft <= 0) {
+                clearInterval(timeLeftInterval);
+                checkLevelCompletion();
+            }
+        }
+
+        function checkLevelCompletion() {
+            isGameOver = true;
+            ctx.fillStyle = 'rgba(0,0,0,0.7)';
+            ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+            ctx.fillStyle = 'white';
+            ctx.textAlign = 'center';
+            ctx.font = 'bold 48px Arial';
+
+            if (money >= goal) {
+                ctx.fillText(`勝利！關卡 ${currentLevel} 完成`, GAME_WIDTH / 2, GAME_HEIGHT / 2);
+                ctx.font = '24px Arial';
+                ctx.fillText(`金錢: $${money} (目標: $${goal})`, GAME_WIDTH / 2, GAME_HEIGHT / 2 + 50);
+            } else {
+                ctx.fillText('遊戲結束', GAME_WIDTH / 2, GAME_HEIGHT / 2);
+                ctx.font = '24px Arial';
+                ctx.fillText(`您只賺到 $${money} (目標 $${goal})`, GAME_WIDTH / 2, GAME_HEIGHT / 2 + 50);
+                ctx.fillText('重新整理網頁再次嘗試', GAME_WIDTH / 2, GAME_HEIGHT / 2 + 90);
+            }
+            ctx.textAlign = 'left';
+        }
+
+        function drawBackground() {
+            ctx.fillStyle = '#7b9cc0';
+            ctx.fillRect(0, FISHERMAN_Y + 10, GAME_WIDTH, GAME_HEIGHT - FISHERMAN_Y - 10);
+
+            ctx.beginPath();
+            ctx.moveTo(0, FISHERMAN_Y + 10);
+            ctx.lineTo(GAME_WIDTH, FISHERMAN_Y + 10);
+            ctx.lineWidth = 5;
+            ctx.strokeStyle = '#fff'; 
+            ctx.stroke();
+
+            ctx.fillStyle = '#e07b39';
+            ctx.fillRect(0, 0, GAME_WIDTH, FISHERMAN_Y + 10);
+
+            ctx.fillStyle = '#4b2c15';
+            ctx.fillRect(GAME_WIDTH / 2 - 20, 10, 40, FISHERMAN_Y - 10); 
+            ctx.beginPath(); 
+            ctx.moveTo(GAME_WIDTH / 2, FISHERMAN_Y - 10);
+            ctx.lineTo(GAME_WIDTH / 2, FISHERMAN_Y);
+            ctx.lineWidth = 5;
+            ctx.strokeStyle = '#fff';
+            ctx.stroke();
+        }
+
+        // 遊戲主循環
+        function gameLoop() {
+            if (isGameOver) return;
+
+            ctx.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+
+            drawBackground();
+
+            // 更新並繪製所有物品
+            for (const item of gameItems) {
+                item.update();
+                item.draw();
+            }
+
+            playerHook.update();
+            playerHook.draw();
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // 點擊事件：發射鉤子
+        canvas.addEventListener('mousedown', () => {
+            if (isGameOver) return;
+            playerHook.deploy();
+        });
+
+       
+        // 啟動遊戲
+        startLevel(1);
+        gameLoop();
+    </script>
+</body>
+</html>
